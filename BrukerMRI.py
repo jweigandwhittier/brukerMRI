@@ -6,7 +6,7 @@ reconstruct Bruker MRI data.
 
 """
 
-
+import os.path
 import numpy as np
 
 # ***********************************************************
@@ -24,6 +24,8 @@ class BrukerData:
         self.k_data = np.array([])
         self.reco_data = np.array([])
         self.reco_data_norm = np.array([]) # normalized reco
+        
+        self.traj = np.array([])
 
         self.B0 = B0 # only needed for UFZ method
         self.GyroRatio = 0 # only needed for UFZ method
@@ -42,8 +44,13 @@ class BrukerData:
         elif (self.method["Method"] == 'FLASH' or 
               self.method["Method"] == 'mic_flash'):
             self.k_data = self._GenKspace_FLASH()
+        elif (self.method["Method"] == '<User:cestsegCSUTE>' or 
+              self.method["Method"] == '<User:cestsegCSUTE_Random>'):
+            self.k_data = self._GenKspace_CEST_UTE()
         else:
             raise NameError("Unknown method")
+            
+        return self.k_data
 
 
     def ReconstructKspace(self, **kwargs):
@@ -185,7 +192,38 @@ class BrukerData:
         if self.method["CEST_AcqMode"] == "On_and_Off_Scan":
             self.reco_data_norm = np.divide(abs(self.reco_data[:,1::2]), 
                                             abs(self.reco_data[:,0::2]))
+            
+    def _GenKspace_CEST_UTE(self):
 
+        complexValues = self.raw_fid
+
+        NTotalPoints = len(self.method["PVM_TrajKx"])
+        NPoints = self.method["PVM_EncMatrix"][0]
+        NRec = self.method["PVM_EncNReceivers"]
+        NFrames = self.method["PVM_NRepetitions"]
+        NProj = self.method["NPro"]
+        
+        BlockSize = len(complexValues)//NProj//NFrames
+        Data = np.reshape(complexValues,(BlockSize, NProj, NFrames), order='F')
+        ToDelete = NTotalPoints - NPoints
+        ##Split per receiver and delete extraneous points##
+        ToDelete = NTotalPoints - NPoints
+        Data_Ch1 = Data[0:NTotalPoints, :, :]
+        Data_Ch2 = Data[NTotalPoints:NTotalPoints*2, :, :]
+        Data_Ch3 = Data[NTotalPoints*2:NTotalPoints*3, :, :]
+        Data_Ch4 = Data[NTotalPoints*3:NTotalPoints*4, :, :]
+        K_Ch1 = Data_Ch1[ToDelete:, :, :]
+        K_Ch2 = Data_Ch2[ToDelete:, :, :]
+        K_Ch3 = Data_Ch3[ToDelete:, :, :]
+        K_Ch4 = Data_Ch4[ToDelete:, :, :]
+        ##Throw into a single array##
+        KSpoke = np.empty((NPoints, NProj, NRec, NFrames), dtype='complex128')
+        KSpoke[:,:,0,:] = K_Ch1
+        KSpoke[:,:,1,:] = K_Ch2
+        KSpoke[:,:,2,:] = K_Ch3
+        KSpoke[:,:,3,:] = K_Ch4
+        
+        return KSpoke
 
 
 # ***********************************************************
@@ -196,6 +234,8 @@ def ReadExperiment(path, ExpNum):
     data, and method and acqp parameters in a dictionary.
 
     """
+    if not path.endswith("/"):
+        path = path + "/"
     data = BrukerData(path, ExpNum)
 
     # parameter files
@@ -207,17 +247,22 @@ def ReadExperiment(path, ExpNum):
     data.proc_data = ReadProcessedData(path + str(ExpNum) + "/pdata/1/2dseq",
                                        data.reco,
                                        data.acqp)
-
+    
+    # raw trajectory
+    if os.path.isfile(path + str(ExpNum) + "/trajDC"):
+        data.traj = ReadTraj(path + str(ExpNum) + "/trajDC", 
+                         data.reco)
+    
     # generate complex FID
     raw_data = ReadRawData(path + str(ExpNum) + "/fid")
-    data.raw_fid = raw_data[0::2] + 1j * raw_data[1::2]
+    data.raw_fid = raw_data[0::2] + 1j * raw_data[1::2] 
 
     # calculate GyroRatio and ConvFreqsFactor
     data.GyroRatio = data.acqp["SFO1"]*2*np.pi/data.B0*10**6 # in rad/Ts
     data.ConvFreqsFactor = 1/(data.GyroRatio*data.B0/10**6/2/np.pi)
 
     data.path = path
-    data.ExpNum =ExpNum
+    data.ExpNum = ExpNum
 
     return data
 
@@ -278,6 +323,16 @@ def RemoveVoidEntries(datavector, acqsize0):
                             + acqsize0/2,
                             (i + 1) * blocksize))
     return  np.delete(datavector, DelIdx)
+
+def ReadTraj(filepath, reco):
+    with open(filepath, "r") as f:
+        traj = np.fromfile(f)
+        
+        traj = traj.reshape(2, reco["RecoRegridNPoints"], reco["RecoSortSize"], order="F")
+        traj *= (reco["RecoRegridNPoints"] - 1)/2/np.max(traj)
+        
+        return traj
+        
 
 def ReadRawData(filepath):
     with open(filepath, "r") as f:

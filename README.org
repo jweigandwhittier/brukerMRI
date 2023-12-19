@@ -51,6 +51,7 @@ important attributes of that class are listed below.
 | =proc_data= | numpy array | data as processed in Paravision   |
 | =k_data=    | numpy array | complex k-space data              |
 | =reco_data= | numpy array | complex reconstruction of k-space |
+| =traj=      | numpy array | k-space trajectory in BART format |
 
 To display e.g. the echo time of the currently loaded experiment, type
 #+begin_SRC python
